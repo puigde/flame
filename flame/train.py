@@ -264,10 +264,14 @@ def main(job_config: JobConfig):
         # We need to iterate through model_parts to apply SPMD parallelisms, compilation,
         # optimizer, and checkpointing
         for m in model_parts:
-            # Initialize weights before parallelization so that models with
-            # custom .data= init (e.g. RWKV-7) operate on plain tensors
-            # instead of DTensors.  The temporary full-size allocation is
-            # freed once FSDP shards the parameters.
+            # Materialize and initialize weights before applying parallelisms.
+            # Some models (e.g. RWKV-7) compute position-dependent init values
+            # as regular tensors and assign via .data, which is incompatible
+            # with DTensors created by FSDP. Cost: full model in fp32
+            # temporarily on each rank (~4 bytes/param). This fits comfortably
+            # for models up to ~10B on 40GB GPUs or ~20B on 80GB GPUs. For
+            # larger models, set init_device="cpu" (e.g. via
+            # --training.enable_cpu_offload).
             m.to_empty(device=init_device)
             with torch.no_grad():
                 m.post_init()
@@ -278,7 +282,8 @@ def main(job_config: JobConfig):
         # confirm that user will be able to view loss metrics on the console
         ensure_pp_loss_visible(parallel_dims, job_config, color)
     else:
-        # Initialize weights before parallelization (see PP path above).
+        # Materialize and initialize weights before parallelization
+        # (see PP path comment above for rationale and memory thresholds).
         model.to_empty(device=init_device)
         with torch.no_grad():
             model.post_init()
