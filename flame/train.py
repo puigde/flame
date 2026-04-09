@@ -264,21 +264,26 @@ def main(job_config: JobConfig):
         # We need to iterate through model_parts to apply SPMD parallelisms, compilation,
         # optimizer, and checkpointing
         for m in model_parts:
-            # apply SPMD-style PT-D techniques
-            train_spec.parallelize_fn(m, world_mesh, parallel_dims, job_config)
+            # Initialize weights before parallelization so that models with
+            # custom .data= init (e.g. RWKV-7) operate on plain tensors
+            # instead of DTensors.  The temporary full-size allocation is
+            # freed once FSDP shards the parameters.
             m.to_empty(device=init_device)
             with torch.no_grad():
                 m.post_init()
+            # apply SPMD-style PT-D techniques
+            train_spec.parallelize_fn(m, world_mesh, parallel_dims, job_config)
             m.train()
 
         # confirm that user will be able to view loss metrics on the console
         ensure_pp_loss_visible(parallel_dims, job_config, color)
     else:
-        # apply PT-D Tensor Parallel, activation checkpointing, torch.compile, Data Parallel
-        train_spec.parallelize_fn(model, world_mesh, parallel_dims, job_config)
+        # Initialize weights before parallelization (see PP path above).
         model.to_empty(device=init_device)
         with torch.no_grad():
             model.post_init()
+        # apply PT-D Tensor Parallel, activation checkpointing, torch.compile, Data Parallel
+        train_spec.parallelize_fn(model, world_mesh, parallel_dims, job_config)
         model.train()
 
         model_parts = [model]
